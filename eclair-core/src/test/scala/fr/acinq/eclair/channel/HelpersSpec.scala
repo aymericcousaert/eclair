@@ -70,6 +70,8 @@ class HelpersSpec extends FunSuite {
     assert(Closing.isClosingTypeAlreadyKnown(
       DATA_CLOSING(
         commitments = null,
+        fundingTx = None,
+        waitingSince = 0,
         mutualCloseProposed = tx1 :: tx2 :: tx3 :: Nil,
         mutualClosePublished = tx2 :: tx3 :: Nil,
         localCommitPublished = None,
@@ -83,6 +85,8 @@ class HelpersSpec extends FunSuite {
     assert(Closing.isClosingTypeAlreadyKnown(
       DATA_CLOSING(
         commitments = null,
+        fundingTx = None,
+        waitingSince = 0,
         mutualCloseProposed = tx1 :: Nil,
         mutualClosePublished = tx1 :: Nil,
         localCommitPublished = Some(LocalCommitPublished(
@@ -103,6 +107,8 @@ class HelpersSpec extends FunSuite {
     assert(Closing.isClosingTypeAlreadyKnown(
       DATA_CLOSING(
         commitments = null,
+        fundingTx = None,
+        waitingSince = 0,
         mutualCloseProposed = tx1 :: Nil,
         mutualClosePublished = tx1 :: Nil,
         localCommitPublished = Some(LocalCommitPublished(
@@ -125,6 +131,8 @@ class HelpersSpec extends FunSuite {
     assert(Closing.isClosingTypeAlreadyKnown(
       DATA_CLOSING(
         commitments = null,
+        fundingTx = None,
+        waitingSince = 0,
         mutualCloseProposed = Nil,
         mutualClosePublished = Nil,
         localCommitPublished = Some(LocalCommitPublished(
@@ -151,6 +159,8 @@ class HelpersSpec extends FunSuite {
     assert(Closing.isClosingTypeAlreadyKnown(
       DATA_CLOSING(
         commitments = null,
+        fundingTx = None,
+        waitingSince = 0,
         mutualCloseProposed = tx1 :: Nil,
         mutualClosePublished = tx1 :: Nil,
         localCommitPublished = Some(LocalCommitPublished(
@@ -179,6 +189,8 @@ class HelpersSpec extends FunSuite {
     assert(Closing.isClosingTypeAlreadyKnown(
       DATA_CLOSING(
         commitments = null,
+        fundingTx = None,
+        waitingSince = 0,
         mutualCloseProposed = tx1 :: Nil,
         mutualClosePublished = tx1 :: Nil,
         localCommitPublished = Some(LocalCommitPublished(
@@ -213,6 +225,8 @@ class HelpersSpec extends FunSuite {
     assert(Closing.isClosingTypeAlreadyKnown(
       DATA_CLOSING(
         commitments = null,
+        fundingTx = None,
+        waitingSince = 0,
         mutualCloseProposed = Nil,
         mutualClosePublished = Nil,
         localCommitPublished = None,
@@ -232,6 +246,8 @@ class HelpersSpec extends FunSuite {
     assert(Closing.isClosingTypeAlreadyKnown(
       DATA_CLOSING(
         commitments = null,
+        fundingTx = None,
+        waitingSince = 0,
         mutualCloseProposed = Nil,
         mutualClosePublished = Nil,
         localCommitPublished = None,
@@ -253,6 +269,8 @@ class HelpersSpec extends FunSuite {
     assert(Closing.isClosingTypeAlreadyKnown(
       DATA_CLOSING(
         commitments = null,
+        fundingTx = None,
+        waitingSince = 0,
         mutualCloseProposed = Nil,
         mutualClosePublished = Nil,
         localCommitPublished = Some(LocalCommitPublished(
@@ -298,6 +316,8 @@ class HelpersSpec extends FunSuite {
     assert(Closing.isClosingTypeAlreadyKnown(
       DATA_CLOSING(
         commitments = null,
+        fundingTx = None,
+        waitingSince = 0,
         mutualCloseProposed = Nil,
         mutualClosePublished = Nil,
         localCommitPublished = Some(LocalCommitPublished(

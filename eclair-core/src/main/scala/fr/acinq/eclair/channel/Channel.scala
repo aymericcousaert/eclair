@@ -182,6 +182,12 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
           log.info(s"we have nothing at stake, going straight to CLOSED")
           goto(CLOSED) using closing
         case closing: DATA_CLOSING =>
+          // if commitment number is zero, we need to make sure that the funding tx is confirmed
+          if (closing.commitments.localCommit.index == 0 && closing.commitments.remoteCommit.index == 0) {
+            blockchain ! WatchConfirmed(self, closing.commitments.commitInput.outPoint.txid, closing.commitments.commitInput.txOut.publicKeyScript, minDepth = 0, BITCOIN_FUNDING_DEPTHOK)
+          }
+
+
           // we don't put back the WatchSpent if the commitment tx has already been published and the spending tx already reached mindepth
           val closingType_opt = Closing.isClosingTypeAlreadyKnown(closing)
           log.info(s"channel is closing (closingType=${closingType_opt.getOrElse("UnknownYet")})")
@@ -447,7 +453,6 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
           log.info(s"waiting for them to publish the funding tx for channelId=$channelId fundingTxid=${commitInput.outPoint.txid}")
           blockchain ! WatchSpent(self, commitInput.outPoint.txid, commitInput.outPoint.index.toInt, commitments.commitInput.txOut.publicKeyScript, BITCOIN_FUNDING_SPENT) // TODO: should we wait for an acknowledgment from the watcher?
           blockchain ! WatchConfirmed(self, commitInput.outPoint.txid, commitments.commitInput.txOut.publicKeyScript, nodeParams.minDepthBlocks, BITCOIN_FUNDING_DEPTHOK)
-          val now = Platform.currentTime.milliseconds.toSeconds
           context.system.scheduler.scheduleOnce(FUNDING_TIMEOUT_FUNDEE, self, BITCOIN_FUNDING_TIMEOUT)
           goto(WAIT_FOR_FUNDING_CONFIRMED) using store(DATA_WAIT_FOR_FUNDING_CONFIRMED(commitments, None, now, None, Right(fundingSigned))) sending fundingSigned
       }
@@ -1812,7 +1817,7 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
     doPublish(closingTx)
 
     val nextData = d match {
-      case Left(negotiating) => DATA_CLOSING(negotiating.commitments, negotiating.closingTxProposed.flatten.map(_.unsignedTx), mutualClosePublished = closingTx :: Nil)
+      case Left(negotiating) => DATA_CLOSING(negotiating.commitments, fundingTx = None, waitingSince = now, negotiating.closingTxProposed.flatten.map(_.unsignedTx), mutualClosePublished = closingTx :: Nil)
       case Right(closing) => closing.copy(mutualClosePublished = closing.mutualClosePublished :+ closingTx)
     }
     goto(CLOSING) using store(nextData)
@@ -1842,8 +1847,9 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
 
       val nextData = d match {
         case closing: DATA_CLOSING => closing.copy(localCommitPublished = Some(localCommitPublished))
-        case negotiating: DATA_NEGOTIATING => DATA_CLOSING(d.commitments, negotiating.closingTxProposed.flatten.map(_.unsignedTx), localCommitPublished = Some(localCommitPublished))
-        case _ => DATA_CLOSING(d.commitments, mutualCloseProposed = Nil, localCommitPublished = Some(localCommitPublished))
+        case negotiating: DATA_NEGOTIATING => DATA_CLOSING(d.commitments, fundingTx = None, waitingSince = now, negotiating.closingTxProposed.flatten.map(_.unsignedTx), localCommitPublished = Some(localCommitPublished))
+        case waitForFundingConfirmed: DATA_WAIT_FOR_FUNDING_CONFIRMED => DATA_CLOSING(d.commitments, fundingTx = waitForFundingConfirmed.fundingTx, waitingSince = now, mutualCloseProposed = Nil, localCommitPublished = Some(localCommitPublished))
+        case _ => DATA_CLOSING(d.commitments, fundingTx = None, waitingSince = now, mutualCloseProposed = Nil, localCommitPublished = Some(localCommitPublished))
       }
 
       goto(CLOSING) using store(nextData)
@@ -1916,8 +1922,9 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
 
     val nextData = d match {
       case closing: DATA_CLOSING => closing.copy(remoteCommitPublished = Some(remoteCommitPublished))
-      case negotiating: DATA_NEGOTIATING => DATA_CLOSING(d.commitments, negotiating.closingTxProposed.flatten.map(_.unsignedTx), remoteCommitPublished = Some(remoteCommitPublished))
-      case _ => DATA_CLOSING(d.commitments, mutualCloseProposed = Nil, remoteCommitPublished = Some(remoteCommitPublished))
+      case negotiating: DATA_NEGOTIATING => DATA_CLOSING(d.commitments, fundingTx = None, waitingSince = now, negotiating.closingTxProposed.flatten.map(_.unsignedTx), remoteCommitPublished = Some(remoteCommitPublished))
+      case waitForFundingConfirmed: DATA_WAIT_FOR_FUNDING_CONFIRMED => DATA_CLOSING(d.commitments, fundingTx = waitForFundingConfirmed.fundingTx, waitingSince = now, mutualCloseProposed = Nil, remoteCommitPublished = Some(remoteCommitPublished))
+      case _ => DATA_CLOSING(d.commitments, fundingTx = None, waitingSince = now, mutualCloseProposed = Nil, remoteCommitPublished = Some(remoteCommitPublished))
     }
 
     goto(CLOSING) using store(nextData)
@@ -1928,7 +1935,7 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
     // if we are in this state, then this field is defined
     val remotePerCommitmentPoint = d.remoteChannelReestablish.myCurrentPerCommitmentPoint.get
     val remoteCommitPublished = Helpers.Closing.claimRemoteCommitMainOutput(keyManager, d.commitments, remotePerCommitmentPoint, commitTx)
-    val nextData = DATA_CLOSING(d.commitments, Nil, futureRemoteCommitPublished = Some(remoteCommitPublished))
+    val nextData = DATA_CLOSING(d.commitments, fundingTx = None, waitingSince = now, Nil, futureRemoteCommitPublished = Some(remoteCommitPublished))
 
     doPublish(remoteCommitPublished)
     goto(CLOSING) using store(nextData)
@@ -1945,8 +1952,9 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
 
     val nextData = d match {
       case closing: DATA_CLOSING => closing.copy(nextRemoteCommitPublished = Some(remoteCommitPublished))
-      case negotiating: DATA_NEGOTIATING => DATA_CLOSING(d.commitments, negotiating.closingTxProposed.flatten.map(_.unsignedTx), nextRemoteCommitPublished = Some(remoteCommitPublished))
-      case _ => DATA_CLOSING(d.commitments, mutualCloseProposed = Nil, nextRemoteCommitPublished = Some(remoteCommitPublished))
+      case negotiating: DATA_NEGOTIATING => DATA_CLOSING(d.commitments, fundingTx = None, waitingSince = now, negotiating.closingTxProposed.flatten.map(_.unsignedTx), nextRemoteCommitPublished = Some(remoteCommitPublished))
+      // NB: if there is a next commitment, we can't be in DATA_WAIT_FOR_FUNDING_CONFIRMED so we don't have the case where fundingTx is defined
+      case _ => DATA_CLOSING(d.commitments, fundingTx = None, waitingSince = now, mutualCloseProposed = Nil, nextRemoteCommitPublished = Some(remoteCommitPublished))
     }
 
     goto(CLOSING) using store(nextData)
@@ -1982,8 +1990,9 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
 
         val nextData = d match {
           case closing: DATA_CLOSING => closing.copy(revokedCommitPublished = closing.revokedCommitPublished :+ revokedCommitPublished)
-          case negotiating: DATA_NEGOTIATING => DATA_CLOSING(d.commitments, negotiating.closingTxProposed.flatten.map(_.unsignedTx), revokedCommitPublished = revokedCommitPublished :: Nil)
-          case _ => DATA_CLOSING(d.commitments, mutualCloseProposed = Nil, revokedCommitPublished = revokedCommitPublished :: Nil)
+          case negotiating: DATA_NEGOTIATING => DATA_CLOSING(d.commitments, fundingTx = None, waitingSince = now, negotiating.closingTxProposed.flatten.map(_.unsignedTx), revokedCommitPublished = revokedCommitPublished :: Nil)
+          // NB: if there is a revoked commitment, we can't be in DATA_WAIT_FOR_FUNDING_CONFIRMED so we don't have the case where fundingTx is defined
+          case _ => DATA_CLOSING(d.commitments, fundingTx = None, waitingSince = now, mutualCloseProposed = Nil, revokedCommitPublished = revokedCommitPublished :: Nil)
         }
         goto(CLOSING) using store(nextData) sending error
       case None =>
@@ -2150,6 +2159,8 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
     }
 
   }
+
+  def now = Platform.currentTime.milliseconds.toSeconds
 
   override def mdc(currentMessage: Any): MDC = {
     val id = currentMessage match {
