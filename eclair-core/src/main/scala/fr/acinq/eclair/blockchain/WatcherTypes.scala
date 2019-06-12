@@ -85,4 +85,7 @@ object UtxoStatus {
 }
 final case class ValidateResult(c: ChannelAnnouncement, fundingTx: Either[Throwable, (Transaction, UtxoStatus)])
 
+final case class GetTx(txid: ByteVector32)
+final case class GetTxResponse (txid: ByteVector32, tx_opt: Option[Transaction], lastBlockTimestamp: Long)
+
 // @formatter:on

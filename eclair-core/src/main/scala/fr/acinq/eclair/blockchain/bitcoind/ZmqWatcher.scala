@@ -179,6 +179,8 @@ class ZmqWatcher(client: ExtendedBitcoinClient)(implicit ec: ExecutionContext = 
 
     case ValidateRequest(ann) => client.validate(ann).pipeTo(sender)
 
+    case GetTx(txid) => client.getTransactionMeta(txid.toString()).pipeTo(sender)
+
     case Terminated(channel) =>
       // we remove watches associated to dead actor
       val deprecatedWatches = watches.filter(_.channel == channel)
