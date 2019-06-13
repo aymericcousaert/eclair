@@ -121,7 +121,7 @@ class ElectrumWatcher(client: ActorRef) extends Actor with Stash with ActorLoggi
         case ElectrumClient.TransactionHistoryItem(txheight, tx_hash) if txheight > 0 => watches.collect {
           case WatchConfirmed(_, txid, _, minDepth, _) if txid == tx_hash =>
             val confirmations = height - txheight + 1
-            log.info(s"txid=$txid was confirmed at height=$txheight and now has confirmations=$confirmations (currentHeight=${height})")
+            log.info(s"txid=$txid was confirmed at height=$txheight and now has confirmations=$confirmations (currentHeight=$height)")
             if (confirmations >= minDepth) {
               // we need to get the tx position in the block
               client ! GetMerkle(tx_hash, txheight)
@@ -153,6 +153,22 @@ class ElectrumWatcher(client: ActorRef) extends Actor with Stash with ActorLoggi
           Some(w)
       }).flatten
       context become running(height, tip, watches -- triggered, scriptHashStatus, block2tx, sent)
+
+    case GetTx(txid) =>
+      import akka.pattern.ask
+      import akka.util.Timeout
+      import scala.concurrent.duration._
+      implicit val ec = context.system.dispatcher
+      implicit val timeout = Timeout(1 minute)
+      val origin = sender
+      for {
+        tx_opt <- (client ? ElectrumClient.GetTransaction(txid)).map {
+          case r: ElectrumClient.GetTransactionResponse => Some(r.tx)
+          case _: ElectrumClient.ServerError => None
+        }
+      } yield {
+        origin ! GetTxResponse(txid, tx_opt, tip.time)
+      }
 
     case PublishAsap(tx) =>
       val blockCount = Globals.blockCount.get()
