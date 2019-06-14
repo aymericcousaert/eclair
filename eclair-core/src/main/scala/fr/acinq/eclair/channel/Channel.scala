@@ -1718,6 +1718,23 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
     stay replying Status.Failure(cause)
   }
 
+  /**
+    * When we are funder, we use this function to detect when our funding tx has been double-spent (by another transaction
+    * that we made for some reason). If the funding tx has been double spent we can forget about the channel.
+    *
+    * @param fundingTx
+    */
+  def checkDoubleSpent(fundingTx: Transaction) = {
+    log.debug(s"checking status of funding tx txid=${fundingTx.txid}")
+    wallet.doubleSpent(fundingTx).onComplete {
+      case Success(true) =>
+        log.warning(s"funding tx has been double spent! fundingTxid=${fundingTx.txid} fundingTx=$fundingTx")
+        self ! BITCOIN_FUNDING_PUBLISH_FAILED
+      case Success(false) => ()
+      case Failure(t) => log.error(t, s"error while testing status of funding tx fundingTxid=${fundingTx.txid}: ")
+    }
+  }
+
   def handleGetFundingTx(getTxResponse: GetTxResponse, waitingSince: Long, fundingTx_opt: Option[Transaction]) = {
     import getTxResponse._
     tx_opt match {
@@ -1743,23 +1760,6 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
         }
     }
     stay
-  }
-
-  /**
-    * When we are funder, we use this function to detect when our funding tx has been double-spent (by another transaction
-    * that we made for some reason). If the funding tx has been double spent we can forget about the channel.
-    *
-    * @param fundingTx
-    */
-  def checkDoubleSpent(fundingTx: Transaction) = {
-      log.debug(s"checking status of funding tx txid=${fundingTx.txid}")
-      wallet.doubleSpent(fundingTx).onComplete {
-        case Success(true) =>
-          log.warning(s"funding tx has been double spent! fundingTxid=${fundingTx.txid} fundingTx=$fundingTx")
-          self ! BITCOIN_FUNDING_PUBLISH_FAILED
-        case Success(false) => ()
-        case Failure(t) => log.error(t, s"error while testing status of funding tx fundingTxid=${fundingTx.txid}: ")
-      }
   }
 
   def handleFundingPublishFailed(d: HasCommitments) = {

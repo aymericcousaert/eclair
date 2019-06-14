@@ -22,6 +22,7 @@ import akka.actor.Status
 import akka.actor.Status.Failure
 import akka.testkit.{TestFSMRef, TestProbe}
 import fr.acinq.bitcoin.{ByteVector32, OutPoint, ScriptFlags, Transaction, TxIn}
+import fr.acinq.eclair.TestConstants.{Alice, Bob}
 import fr.acinq.eclair.blockchain._
 import fr.acinq.eclair.blockchain.fee.FeeratesPerKw
 import fr.acinq.eclair.channel.states.StateTestsHelperMethods
@@ -30,9 +31,10 @@ import fr.acinq.eclair.payment._
 import fr.acinq.eclair.transactions.Scripts
 import fr.acinq.eclair.wire._
 import fr.acinq.eclair.{Globals, TestConstants, TestkitBaseClass, randomBytes32}
-import org.scalatest.Outcome
+import org.scalatest.{Outcome, Tag}
 import scodec.bits.ByteVector
 
+import scala.compat.Platform
 import scala.concurrent.duration._
 
 /**
@@ -47,6 +49,40 @@ class ClosingStateSpec extends TestkitBaseClass with StateTestsHelperMethods {
     val setup = init()
     import setup._
 
+    // NOTE
+    // As opposed to other tests, we won't reach the target state (here CLOSING) at the end of the fixture.
+    // The reason for this is that we may reach CLOSING state following several events:
+    // - local commit
+    // - remote commit
+    // - revoked commit
+    // and we want to be able to test the different scenarii.
+    // Hence the WAIT_FOR_FUNDING_CONFIRMED->CLOSING or NORMAL->CLOSING transition will occur in the individual tests.
+
+    val unconfirmedFundingTx = test.tags.contains("funding_unconfirmed")
+
+    if (unconfirmedFundingTx) {
+      within(30 seconds) {
+        val aliceInit = Init(Alice.channelParams.globalFeatures, Alice.channelParams.localFeatures)
+        val bobInit = Init(Bob.channelParams.globalFeatures, Bob.channelParams.localFeatures)
+        alice ! INPUT_INIT_FUNDER(ByteVector32.Zeroes, TestConstants.fundingSatoshis, TestConstants.pushMsat, TestConstants.feeratePerKw, TestConstants.feeratePerKw, Alice.channelParams, alice2bob.ref, bobInit, ChannelFlags.Empty)
+        bob ! INPUT_INIT_FUNDEE(ByteVector32.Zeroes, Bob.channelParams, bob2alice.ref, aliceInit)
+        alice2bob.expectMsgType[OpenChannel]
+        alice2bob.forward(bob)
+        bob2alice.expectMsgType[AcceptChannel]
+        bob2alice.forward(alice)
+        alice2bob.expectMsgType[FundingCreated]
+        alice2bob.forward(bob)
+        bob2alice.expectMsgType[FundingSigned]
+        bob2alice.forward(alice)
+        alice2blockchain.expectMsgType[WatchSpent]
+        alice2blockchain.expectMsgType[WatchConfirmed]
+        bob2blockchain.expectMsgType[WatchSpent]
+        bob2blockchain.expectMsgType[WatchConfirmed]
+        awaitCond(alice.stateName == WAIT_FOR_FUNDING_CONFIRMED)
+        awaitCond(bob.stateName == WAIT_FOR_FUNDING_CONFIRMED)
+        withFixture(test.toNoArgTest(FixtureParam(alice, bob, alice2bob, bob2alice, alice2blockchain, bob2blockchain, relayerA, relayerB, channelUpdateListener, Nil)))
+      }
+    } else {
     within(30 seconds) {
       reachNormal(setup)
       val bobCommitTxes: List[PublishableTxs] = (for (amt <- List(100000000, 200000000, 300000000)) yield {
@@ -66,16 +102,8 @@ class ClosingStateSpec extends TestkitBaseClass with StateTestsHelperMethods {
 
       awaitCond(alice.stateName == NORMAL)
       awaitCond(bob.stateName == NORMAL)
-
-      // NOTE
-      // As opposed to other tests, we won't reach the target state (here CLOSING) at the end of the fixture.
-      // The reason for this is that we may reach CLOSING state following several events:
-      // - local commit
-      // - remote commit
-      // - revoked commit
-      // and we want to be able to test the different scenarii.
-      // Hence the NORMAL->CLOSING transition will occur in the individual tests.
       withFixture(test.toNoArgTest(FixtureParam(alice, bob, alice2bob, bob2alice, alice2blockchain, bob2blockchain, relayerA, relayerB, channelUpdateListener, bobCommitTxes)))
+    }
     }
   }
 
@@ -107,6 +135,141 @@ class ClosingStateSpec extends TestkitBaseClass with StateTestsHelperMethods {
     awaitCond(alice.stateName == CLOSING)
     awaitCond(bob.stateName == CLOSING)
     // both nodes are now in CLOSING state with a mutual close tx pending for confirmation
+  }
+
+  test("recv BITCOIN_FUNDING_PUBLISH_FAILED", Tag("funding_unconfirmed")) { f =>
+    import f._
+    alice ! CMD_FORCECLOSE
+    awaitCond(alice.stateName == CLOSING)
+    alice2blockchain.expectMsgType[PublishAsap]
+    alice2blockchain.expectMsgType[PublishAsap] // claim-main-delayed
+
+    // test starts here
+    alice ! BITCOIN_FUNDING_PUBLISH_FAILED
+    alice2bob.expectMsgType[Error]
+    awaitCond(alice.stateName == CLOSED)
+  }
+
+  test("recv BITCOIN_FUNDING_TIMEOUT", Tag("funding_unconfirmed")) { f =>
+    import f._
+    alice ! CMD_FORCECLOSE
+    awaitCond(alice.stateName == CLOSING)
+    alice2blockchain.expectMsgType[PublishAsap]
+    alice2blockchain.expectMsgType[PublishAsap] // claim-main-delayed
+
+    // test starts here
+    alice ! BITCOIN_FUNDING_TIMEOUT
+    alice2bob.expectMsgType[Error]
+    awaitCond(alice.stateName == CLOSED)
+  }
+
+  test("recv GetTxResponse (funder, tx found)", Tag("funding_unconfirmed")) { f =>
+    import f._
+    val fundingTx = alice.stateData.asInstanceOf[DATA_WAIT_FOR_FUNDING_CONFIRMED].fundingTx.get
+    alice ! CMD_FORCECLOSE
+    awaitCond(alice.stateName == CLOSING)
+    alice2bob.expectMsgType[Error]
+    alice2blockchain.expectMsgType[PublishAsap]
+    alice2blockchain.expectMsgType[PublishAsap] // claim-main-delayed
+    alice2blockchain.expectMsgType[WatchConfirmed] // commitment
+    alice2blockchain.expectMsgType[WatchConfirmed] // claim-main-delayed
+
+    // test starts here
+    alice ! GetTxResponse(fundingTx.txid, Some(fundingTx), Platform.currentTime.milliseconds.toSeconds)
+    alice2bob.expectNoMsg(200 millis)
+    alice2blockchain.expectNoMsg(200 millis)
+    assert(alice.stateName == CLOSING) // the above expectNoMsg will make us wait, so this checks that we are still in CLOSING
+  }
+
+  test("recv GetTxResponse (funder, tx not found)", Tag("funding_unconfirmed")) { f =>
+    import f._
+    val fundingTx = alice.stateData.asInstanceOf[DATA_WAIT_FOR_FUNDING_CONFIRMED].fundingTx.get
+    alice ! CMD_FORCECLOSE
+    awaitCond(alice.stateName == CLOSING)
+    alice2bob.expectMsgType[Error]
+    alice2blockchain.expectMsgType[PublishAsap]
+    alice2blockchain.expectMsgType[PublishAsap] // claim-main-delayed
+    alice2blockchain.expectMsgType[WatchConfirmed] // commitment
+    alice2blockchain.expectMsgType[WatchConfirmed] // claim-main-delayed
+
+    // test starts here
+    alice ! GetTxResponse(fundingTx.txid, None, Platform.currentTime.milliseconds.toSeconds)
+    alice2bob.expectNoMsg(200 millis)
+    alice2blockchain.expectMsg(PublishAsap(fundingTx)) // we republish the funding tx
+    assert(alice.stateName == CLOSING) // the above expectNoMsg will make us wait, so this checks that we are still in CLOSING
+  }
+
+  test("recv GetTxResponse (fundee, tx found)", Tag("funding_unconfirmed")) { f =>
+    import f._
+    val fundingTx = alice.stateData.asInstanceOf[DATA_WAIT_FOR_FUNDING_CONFIRMED].fundingTx.get
+    bob ! CMD_FORCECLOSE
+    awaitCond(bob.stateName == CLOSING)
+    bob2alice.expectMsgType[Error]
+    bob2blockchain.expectMsgType[PublishAsap]
+    bob2blockchain.expectMsgType[PublishAsap] // claim-main-delayed
+    bob2blockchain.expectMsgType[WatchConfirmed] // commitment
+    bob2blockchain.expectMsgType[WatchConfirmed] // claim-main-delayed
+
+    // test starts here
+    bob ! GetTxResponse(fundingTx.txid, Some(fundingTx), Platform.currentTime.milliseconds.toSeconds)
+    bob2alice.expectNoMsg(200 millis)
+    bob2blockchain.expectNoMsg(200 millis)
+    assert(bob.stateName == CLOSING) // the above expectNoMsg will make us wait, so this checks that we are still in CLOSING
+  }
+
+  test("recv GetTxResponse (fundee, tx not found)", Tag("funding_unconfirmed")) { f =>
+    import f._
+    val fundingTx = alice.stateData.asInstanceOf[DATA_WAIT_FOR_FUNDING_CONFIRMED].fundingTx.get
+    bob ! CMD_FORCECLOSE
+    awaitCond(bob.stateName == CLOSING)
+    bob2alice.expectMsgType[Error]
+    bob2blockchain.expectMsgType[PublishAsap]
+    bob2blockchain.expectMsgType[PublishAsap] // claim-main-delayed
+    bob2blockchain.expectMsgType[WatchConfirmed] // commitment
+    bob2blockchain.expectMsgType[WatchConfirmed] // claim-main-delayed
+
+    // test starts here
+    bob ! GetTxResponse(fundingTx.txid, None, Platform.currentTime.milliseconds.toSeconds)
+    bob2alice.expectNoMsg(200 millis)
+    bob2blockchain.expectNoMsg(200 millis)
+    assert(bob.stateName == CLOSING) // the above expectNoMsg will make us wait, so this checks that we are still in CLOSING
+  }
+
+  test("recv GetTxResponse (fundee, tx not found, timeout)", Tag("funding_unconfirmed")) { f =>
+    import f._
+    val fundingTx = alice.stateData.asInstanceOf[DATA_WAIT_FOR_FUNDING_CONFIRMED].fundingTx.get
+    bob ! CMD_FORCECLOSE
+    awaitCond(bob.stateName == CLOSING)
+    bob2alice.expectMsgType[Error]
+    bob2blockchain.expectMsgType[PublishAsap]
+    bob2blockchain.expectMsgType[PublishAsap] // claim-main-delayed
+    bob2blockchain.expectMsgType[WatchConfirmed] // commitment
+    bob2blockchain.expectMsgType[WatchConfirmed] // claim-main-delayed
+
+    // test starts here
+    bob.setState(stateData = bob.stateData.asInstanceOf[DATA_CLOSING].copy(waitingSince = Platform.currentTime.milliseconds.toSeconds - 15.days.toSeconds))
+    bob ! GetTxResponse(fundingTx.txid, None, Platform.currentTime.milliseconds.toSeconds)
+    bob2alice.expectMsgType[Error]
+    bob2blockchain.expectNoMsg(200 millis)
+    assert(bob.stateName == CLOSED)
+  }
+
+  test("recv GetTxResponse (fundee, tx not found, timeout, blockchain lags)", Tag("funding_unconfirmed")) { f =>
+    import f._
+    val fundingTx = alice.stateData.asInstanceOf[DATA_WAIT_FOR_FUNDING_CONFIRMED].fundingTx.get
+    bob ! CMD_FORCECLOSE
+    awaitCond(bob.stateName == CLOSING)
+    bob2alice.expectMsgType[Error]
+    bob2blockchain.expectMsgType[PublishAsap]
+    bob2blockchain.expectMsgType[PublishAsap] // claim-main-delayed
+    bob2blockchain.expectMsgType[WatchConfirmed] // commitment
+    bob2blockchain.expectMsgType[WatchConfirmed] // claim-main-delayed
+
+    // test starts here
+    bob ! GetTxResponse(fundingTx.txid, None, Platform.currentTime.milliseconds.toSeconds - 3.hours.toSeconds)
+    bob2alice.expectNoMsg(200 millis)
+    bob2blockchain.expectNoMsg(200 millis)
+    assert(bob.stateName == CLOSING) // the above expectNoMsg will make us wait, so this checks that we are still in CLOSING
   }
 
   test("recv CMD_ADD_HTLC") { f =>
