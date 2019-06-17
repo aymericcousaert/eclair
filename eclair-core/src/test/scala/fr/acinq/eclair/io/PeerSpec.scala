@@ -73,7 +73,7 @@ class PeerSpec extends TestkitBaseClass {
     val transport = TestProbe()
     val wallet: EclairWallet = null // unused
     val remoteNodeId = Bob.nodeParams.nodeId
-    val peer: TestFSMRef[Peer.State, Peer.Data, Peer] = TestFSMRef(new Peer(aliceParams, remoteNodeId, authenticator.ref, watcher.ref, router.ref, relayer.ref, wallet))
+    val peer: TestFSMRef[Peer.State, Peer.Data, Peer] = TestFSMRef(new Peer(aliceParams, remoteNodeId, authenticator.ref, watcher.ref, router.ref, relayer.ref, wallet, connectOnStartup = true))
     withFixture(test.toNoArgTest(FixtureParam(remoteNodeId, authenticator, watcher, router, relayer, connection, transport, peer, server_opt)))
   }
 

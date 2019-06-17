@@ -66,22 +66,21 @@ class Switchboard(nodeParams: NodeParams, authenticator: ActorRef, watcher: Acto
 
     cleanupRelayDb(channels, nodeParams.db.pendingRelay)
 
-    val channelSize = channels.size
+    val channelsByPeer = channels.groupBy(_.commitments.remoteParams.nodeId)
+    val shouldConnectOnStartup = channelsByPeer.keys.size < 10
 
-    channels
-      .groupBy(_.commitments.remoteParams.nodeId)
+    channelsByPeer
       .map {
         case (remoteNodeId, states) =>
           val address_opt = peers.get(remoteNodeId).orElse {
-            nodeParams.db.network.getNode(remoteNodeId).flatMap(_.addresses.headOption) // gets the first of the list! TODO improve selection?
+            nodeParams.db.network.getNode(remoteNodeId).flatMap(_.addresses.headOption) // TODO improve selection?
           }
           (remoteNodeId, states, address_opt)
       }
       .foreach {
         case (remoteNodeId, states, nodeaddress_opt) =>
-          // we might not have an address if we didn't initiate the connection in the first place
           val address_opt = nodeaddress_opt.map(_.socketAddress)
-          createOrGetPeer(remoteNodeId, previousKnownAddress = address_opt, offlineChannels = states.toSet, connectOnStartup = channelSize < 10)
+          createOrGetPeer(remoteNodeId, previousKnownAddress = address_opt, offlineChannels = states.toSet, connectOnStartup = shouldConnectOnStartup)
       }
   }
 
