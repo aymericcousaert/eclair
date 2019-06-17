@@ -16,8 +16,7 @@
 
 package fr.acinq.eclair.io
 
-import java.net.{Inet4Address, InetSocketAddress}
-
+import java.net.{Inet4Address, InetAddress, InetSocketAddress, ServerSocket}
 import akka.actor.{ActorRef, ActorSystem, PoisonPill}
 import akka.actor.FSM.{CurrentState, SubscribeTransitionCallBack, Transition}
 import akka.testkit.{EventFilter, TestFSMRef, TestKit, TestProbe}
@@ -34,7 +33,6 @@ import fr.acinq.eclair.router.{ChannelRangeQueries, ChannelRangeQueriesSpec, Reb
 import fr.acinq.eclair.wire.{Color, Error, IPv4, NodeAddress, NodeAnnouncement, Ping, Pong}
 import org.scalatest.{Outcome, Tag}
 import scodec.bits.ByteVector
-
 import scala.concurrent.duration._
 
 class PeerSpec extends TestkitBaseClass {
@@ -48,16 +46,23 @@ class PeerSpec extends TestkitBaseClass {
   val updates = (fakeRoutingInfo.map(_._2) ++ fakeRoutingInfo.map(_._3)).toList
   val nodes = (fakeRoutingInfo.map(_._4) ++ fakeRoutingInfo.map(_._5)).toList
 
-  case class FixtureParam(remoteNodeId: PublicKey, authenticator: TestProbe, watcher: TestProbe, router: TestProbe, relayer: TestProbe, connection: TestProbe, transport: TestProbe, peer: TestFSMRef[Peer.State, Peer.Data, Peer])
+  case class FixtureParam(remoteNodeId: PublicKey, authenticator: TestProbe, watcher: TestProbe, router: TestProbe, relayer: TestProbe, connection: TestProbe, transport: TestProbe, peer: TestFSMRef[Peer.State, Peer.Data, Peer], server_opt: Option[ServerSocket])
 
   override protected def withFixture(test: OneArgTest): Outcome = {
     val aParams = Alice.nodeParams
-    val aliceParams = test.tags.contains("with_node_announcements") match {
-      case true =>
+    val (aliceParams, server_opt)= test.tags.toList match {
+      case "with_socket" :: Nil =>
+        val mockServer = new ServerSocket(0, 50, InetAddress.getLocalHost) // port will be assigned automatically
+        val mockAddress = NodeAddress.fromParts(mockServer.getInetAddress.getHostAddress, mockServer.getLocalPort).get
+        val aliceAnnouncement = NodeAnnouncement(randomBytes64, ByteVector.empty, 1, Bob.nodeParams.nodeId, Color(100.toByte, 200.toByte, 300.toByte), "node-alias", mockAddress :: Nil)
+        aParams.db.network.addNode(aliceAnnouncement)
+        (aParams, Some(mockServer))
+      case "with_node_announcements" :: Nil =>
         val aliceAnnouncement = NodeAnnouncement(randomBytes64, ByteVector.empty, 1, Bob.nodeParams.nodeId, Color(100.toByte, 200.toByte, 300.toByte), "node-alias", fakeIPAddress :: Nil)
         aParams.db.network.addNode(aliceAnnouncement)
-        aParams
-      case false => aParams
+        (aParams, None)
+      case _ =>
+        (aParams, None)
     }
 
     val authenticator = TestProbe()
@@ -69,7 +74,7 @@ class PeerSpec extends TestkitBaseClass {
     val wallet: EclairWallet = null // unused
     val remoteNodeId = Bob.nodeParams.nodeId
     val peer: TestFSMRef[Peer.State, Peer.Data, Peer] = TestFSMRef(new Peer(aliceParams, remoteNodeId, authenticator.ref, watcher.ref, router.ref, relayer.ref, wallet))
-    withFixture(test.toNoArgTest(FixtureParam(remoteNodeId, authenticator, watcher, router, relayer, connection, transport, peer)))
+    withFixture(test.toNoArgTest(FixtureParam(remoteNodeId, authenticator, watcher, router, relayer, connection, transport, peer, server_opt)))
   }
 
   def connect(remoteNodeId: PublicKey, authenticator: TestProbe, watcher: TestProbe, router: TestProbe, relayer: TestProbe, connection: TestProbe, transport: TestProbe, peer: ActorRef, channels: Set[HasCommitments] = Set.empty): Unit = {
@@ -149,6 +154,23 @@ class PeerSpec extends TestkitBaseClass {
     probe.send(peer, Peer.Init(Some(previouslyKnownAddress), Set.empty))
     probe.send(peer, Peer.Reconnect)
     probe.expectNoMsg()
+  }
+
+  test("reconnect using the address from node_announcement", Tag("with_socket")) { f =>
+    import f._
+
+    val probe = TestProbe()
+    awaitCond(peer.stateName == INSTANTIATING)
+    probe.send(peer, Peer.Init(None, Set(ChannelStateSpec.normal)))
+    awaitCond(peer.stateName == DISCONNECTED)
+
+    // we force a Reconnect message to not wait the 1 second delay
+    probe.send(peer, Reconnect)
+
+    // assert our mock server got an incoming connection (the client was spawned with the address from node_announcement)
+    within(30 seconds) {
+      server_opt.get.accept()
+    }
   }
 
   test("count reconnections") { f =>
