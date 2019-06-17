@@ -1756,7 +1756,7 @@ class Channel(val nodeParams: NodeParams, val wallet: EclairWallet, remoteNodeId
             self ! BITCOIN_FUNDING_TIMEOUT
           case None =>
             // let's wait a little longer
-            log.info(s"funding tx still hasn't been published in ${(now.seconds - waitingSince.seconds).toDays} days, will wait ${(now.seconds + FUNDING_TIMEOUT_FUNDEE - waitingSince.seconds).toDays} more days...")
+            log.info(s"funding tx still hasn't been published in ${(now.seconds - waitingSince.seconds).toDays} days, will wait ${(FUNDING_TIMEOUT_FUNDEE - now.seconds + waitingSince.seconds).toDays} more days...")
             context.system.scheduler.scheduleOnce(1 day, blockchain, GetTx(txid))
         }
     }
