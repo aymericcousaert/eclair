@@ -249,3 +249,33 @@ case class ReplyShortChannelIdsEnd(chainHash: ByteVector32,
 case class GossipTimestampFilter(chainHash: ByteVector32,
                                  firstTimestamp: Long,
                                  timestampRange: Long) extends RoutingMessage with HasChainHash
+
+sealed trait TLV
+
+/**
+  * Generic TLV type we fallback to if we don't understand the TLV type.
+  *
+  * @param `type` TLV type
+  * @param value TLV value (length is implicit, and encoded as a varint)
+  */
+case class GenericTLV(`type`: Long, value: ByteVector) extends TLV
+
+/**
+  * TLV types defined in the context of an onion payload.
+  */
+sealed trait OnionTLV extends TLV
+
+case class AmountToForward(amountMsat: Long) extends OnionTLV
+
+case class OutgoingCltvValue(cltv: Long) extends OnionTLV
+
+case class ChannelId(shortChannelId: ShortChannelId) extends OnionTLV
+
+case class NodeId(nodeId: PublicKey) extends OnionTLV
+
+// Recipient Info -> 0x0a
+// Trampoline Onion Packet -> 0x0c
+
+// TODO: extract/implement TLV stream encoding/decoding?
+// TODO: move everything TLV to separate object (easier for namespacing TLV types)
+// Put everything TLV in a separate PR to merge before range queries?

@@ -18,16 +18,15 @@ package fr.acinq.eclair.wire
 
 import java.net.{Inet4Address, Inet6Address, InetAddress}
 
-import com.google.common.cache.{CacheBuilder, CacheLoader}
 import fr.acinq.bitcoin.Crypto.{PrivateKey, PublicKey}
 import fr.acinq.bitcoin.{ByteVector32, ByteVector64}
 import fr.acinq.eclair.crypto.Sphinx
 import fr.acinq.eclair.wire.FixedSizeStrictCodec.bytesStrict
 import fr.acinq.eclair.{ShortChannelId, UInt64, wire}
 import org.apache.commons.codec.binary.Base32
-import scodec.bits.{BitVector, ByteVector}
+import scodec.bits.{BitVector, ByteVector, HexStringSyntax}
 import scodec.codecs._
-import scodec.{Attempt, Codec, DecodeResult, Err, SizeBound}
+import scodec.{Attempt, Codec, Err}
 
 import scala.util.{Failure, Success, Try}
 
@@ -45,6 +44,8 @@ object LightningMessageCodecs {
   // this codec can be safely used for values < 2^63 and will fail otherwise
   // (for something smarter see https://github.com/yzernik/bitcoin-scodec/blob/master/src/main/scala/io/github/yzernik/bitcoinscodec/structures/UInt64.scala)
   val uint64: Codec[Long] = int64.narrow(l => if (l >= 0) Attempt.Successful(l) else Attempt.failure(Err(s"overflow for value $l")), l => l)
+
+  val uint64L: Codec[Long] = int64L.narrow(l => if (l >= 0) Attempt.Successful(l) else Attempt.failure(Err(s"overflow for value $l")), l => l)
 
   val uint64ex: Codec[UInt64] = bytes(8).xmap(b => UInt64(b), a => a.toByteVector.padLeft(8))
 
@@ -67,7 +68,7 @@ object LightningMessageCodecs {
         case i =>
           for {
             a <- uint8L.encode(0xff)
-            b <- uint64.encode(i)
+            b <- uint64L.encode(i)
           } yield a ++ b
       },
     (buf: BitVector) => {
@@ -75,7 +76,7 @@ object LightningMessageCodecs {
         case scodec.Attempt.Successful(byte) =>
           byte.value match {
             case 0xff =>
-              uint64.decode(byte.remainder)
+              uint64L.decode(byte.remainder)
             case 0xfe =>
               uint32L.decode(byte.remainder)
             case 0xfd =>
@@ -257,14 +258,13 @@ object LightningMessageCodecs {
       ("nodeSignature" | bytes64) ::
       ("bitcoinSignature" | bytes64)).as[AnnouncementSignatures]
 
-  val channelAnnouncementWitnessCodec = (
-    ("features" | varsizebinarydata) ::
-      ("chainHash" | bytes32) ::
-      ("shortChannelId" | shortchannelid) ::
-      ("nodeId1" | publicKey) ::
-      ("nodeId2" | publicKey) ::
-      ("bitcoinKey1" | publicKey) ::
-      ("bitcoinKey2" | publicKey))
+  val channelAnnouncementWitnessCodec = ("features" | varsizebinarydata) ::
+    ("chainHash" | bytes32) ::
+    ("shortChannelId" | shortchannelid) ::
+    ("nodeId1" | publicKey) ::
+    ("nodeId2" | publicKey) ::
+    ("bitcoinKey1" | publicKey) ::
+    ("bitcoinKey2" | publicKey)
 
   val channelAnnouncementCodec: Codec[ChannelAnnouncement] = (
     ("nodeSignature1" | bytes64) ::
@@ -273,13 +273,12 @@ object LightningMessageCodecs {
       ("bitcoinSignature2" | bytes64) ::
       channelAnnouncementWitnessCodec).as[ChannelAnnouncement]
 
-  val nodeAnnouncementWitnessCodec = (
-    ("features" | varsizebinarydata) ::
-      ("timestamp" | uint32) ::
-      ("nodeId" | publicKey) ::
-      ("rgbColor" | rgb) ::
-      ("alias" | zeropaddedstring(32)) ::
-      ("addresses" | listofnodeaddresses))
+  val nodeAnnouncementWitnessCodec = ("features" | varsizebinarydata) ::
+    ("timestamp" | uint32) ::
+    ("nodeId" | publicKey) ::
+    ("rgbColor" | rgb) ::
+    ("alias" | zeropaddedstring(32)) ::
+    ("addresses" | listofnodeaddresses)
 
   val nodeAnnouncementCodec: Codec[NodeAnnouncement] = (
     ("signature" | bytes64) ::
@@ -368,5 +367,30 @@ object LightningMessageCodecs {
       ("amt_to_forward" | uint64) ::
       ("outgoing_cltv_value" | uint32) ::
       ("unused_with_v0_version_on_header" | ignore(8 * 12))).as[PerHopPayload]
+
+  val genericTlvCodec: Codec[GenericTLV] = (("type" | varIntCodec) :: variableSizeBytesLong(varIntCodec, bytes)).as[GenericTLV]
+
+  def tlvFallbackCodec(codec: Codec[TLV]): Codec[TLV] = discriminatorFallback(genericTlvCodec, codec).xmap(_ match {
+    case Left(l) => l
+    case Right(r) => r
+  }, _ match {
+    case g: GenericTLV => Left(g)
+    case o => Right(o)
+  })
+
+  val amountToForwardTlv: Codec[AmountToForward] = ("amt_to_forward" | varIntCodec).as[AmountToForward]
+
+  val outgoingCltvValueTlv: Codec[OutgoingCltvValue] = ("outgoing_cltv_value" | varIntCodec).as[OutgoingCltvValue]
+
+  val channelIdTlv: Codec[ChannelId] = (("length" | constant(hex"08")) :: ("short_channel_id" | shortchannelid)).as[ChannelId]
+
+  val nodeIdTlv: Codec[NodeId] = (("length" | constant(hex"21")) :: ("node_id" | publicKey)).as[NodeId]
+
+  val lightningOnionTlvCodec = tlvFallbackCodec(discriminated[TLV].by(varIntCodec)
+    .typecase(2, amountToForwardTlv)
+    .typecase(4, outgoingCltvValueTlv)
+    .typecase(6, channelIdTlv)
+    .typecase(8, nodeIdTlv)
+  )
 
 }

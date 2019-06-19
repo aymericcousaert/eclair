@@ -31,7 +31,6 @@ import scodec.bits.{BitVector, ByteVector, HexStringSyntax}
 /**
   * Created by PM on 31/05/2016.
   */
-
 class LightningMessageCodecsSpec extends FunSuite {
 
   def bin(len: Int, fill: Byte) = ByteVector.fill(len)(fill)
@@ -64,7 +63,7 @@ class LightningMessageCodecsSpec extends FunSuite {
       42L -> hex"2a",
       550L -> hex"fd 26 02",
       998000L -> hex"fe 70 3a 0f 00",
-      1311768467294899695L -> hex"ff 12 34 56 78 90 ab cd ef"
+      6211610197754262546L -> hex"ff 12 34 56 78 90 12 34 56"
     ).mapValues(_.toBitVector)
 
     for ((long, ref) <- expected) {
@@ -171,7 +170,7 @@ class LightningMessageCodecsSpec extends FunSuite {
     {
       val alias = "IRATEMONK"
       val bin = c.encode(alias).require
-      assert(bin === BitVector(alias.getBytes("UTF-8") ++ Array.fill[Byte](32 - alias.size)(0)))
+      assert(bin === BitVector(alias.getBytes("UTF-8") ++ Array.fill[Byte](32 - alias.length)(0)))
       val alias2 = c.decode(bin).require.value
       assert(alias === alias2)
     }
@@ -179,7 +178,7 @@ class LightningMessageCodecsSpec extends FunSuite {
     {
       val alias = "this-alias-is-exactly-32-B-long."
       val bin = c.encode(alias).require
-      assert(bin === BitVector(alias.getBytes("UTF-8") ++ Array.fill[Byte](32 - alias.size)(0)))
+      assert(bin === BitVector(alias.getBytes("UTF-8") ++ Array.fill[Byte](32 - alias.length)(0)))
       val alias2 = c.decode(bin).require.value
       assert(alias === alias2)
     }
@@ -212,7 +211,6 @@ class LightningMessageCodecsSpec extends FunSuite {
   }
 
   test("encode/decode all channel messages") {
-
     val open = OpenChannel(randomBytes32, randomBytes32, 3, 4, 5, UInt64(6), 7, 8, 9, 10, 11, publicKey(1), point(2), point(3), point(4), point(5), point(6), 0.toByte)
     val accept = AcceptChannel(randomBytes32, 3, UInt64(4), 5, 6, 7, 8, 9, publicKey(1), point(2), point(3), point(4), point(5), point(6))
     val funding_created = FundingCreated(randomBytes32, bin32(0), 3, randomBytes64)
@@ -245,11 +243,10 @@ class LightningMessageCodecsSpec extends FunSuite {
         channel_announcement :: node_announcement :: channel_update :: gossip_timestamp_filter :: query_short_channel_id :: query_channel_range :: reply_channel_range :: announcement_signatures :: ping :: pong :: channel_reestablish :: Nil
 
     msgs.foreach {
-      case msg => {
+      msg =>
         val encoded = lightningMessageCodec.encode(msg).require
         val decoded = lightningMessageCodec.decode(encoded).require
         assert(msg === decoded.value)
-      }
     }
   }
 
@@ -277,6 +274,42 @@ class LightningMessageCodecsSpec extends FunSuite {
     assert(Announcements.checkSig(update, nodeId))
     val bin2 = ByteVector(LightningMessageCodecs.lightningMessageCodec.encode(update).require.toByteArray)
     assert(bin === bin2)
+  }
+
+  test("decode invalid onion TLVs") {
+    val testCases = Seq(
+      hex"0xfd022a", // type truncated
+      hex"0x00fd022a", // length truncated
+      hex"0x03fd26020231", // value truncated
+      hex"0x06012a", // short channel id length too short
+      hex"0x0609010101010101010101", // short channel id length too big
+      hex"0x08022aa2", // public key too short
+      hex"0x082200000000000000000000000000000000000000000000000000000000000000000000" // public key too long
+    )
+
+    for (testCase <- testCases) {
+      assert(LightningMessageCodecs.lightningOnionTlvCodec.decode(testCase.toBitVector).isFailure)
+    }
+  }
+
+  test("encode/decode onion TLVs") {
+    val testCases = Seq(
+      (hex"0x022a", AmountToForward(42)),
+      (hex"0x02fd2602", AmountToForward(550)),
+      (hex"0x042a", OutgoingCltvValue(42)),
+      (hex"0x04fe12345678", OutgoingCltvValue(2018915346)),
+      (hex"0x0608000000000000002a", ChannelId(ShortChannelId(42))),
+      (hex"0x06080000000000000226", ChannelId(ShortChannelId(550))),
+      (hex"0x082102eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619", NodeId(PublicKey(hex"02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619"))),
+      (hex"0xff1234567890123456 fd0001 10101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010010101010101", GenericTLV(6211610197754262546L, hex"10101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010010101010101"))
+    )
+
+    for ((bin, expected) <- testCases) {
+      val decoded = LightningMessageCodecs.lightningOnionTlvCodec.decode(bin.toBitVector).require.value.asInstanceOf[TLV]
+      assert(decoded === expected)
+      val encoded = LightningMessageCodecs.lightningOnionTlvCodec.encode(expected).require.toByteVector
+      assert(encoded === bin)
+    }
   }
 
 }
